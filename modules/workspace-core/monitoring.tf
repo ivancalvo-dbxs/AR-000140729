@@ -85,7 +85,7 @@ resource "databricks_job" "security_alerts" {
     spark_python_task {
       python_file = databricks_file.security_alerts.path
       parameters = [
-        tostring(databricks_mws_workspaces.this.workspace_id),
+        tostring(var.workspace_id),
         local.workspace_catalog,
         tostring(local.alert_lookback_hours),
       ]

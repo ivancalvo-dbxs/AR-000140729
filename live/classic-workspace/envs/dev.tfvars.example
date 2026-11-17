@@ -1,0 +1,42 @@
+# Dev classic (customer-managed VPC) ingest workspace: every service on for engineers, synthetic data only.
+prefix      = "acme"
+zone        = "shared"
+function    = "ingest"
+environment = "dev"
+aws_region  = "us-west-2"
+signals     = ["raw"]
+
+databricks_account_id   = "00000000-0000-0000-0000-000000000000"
+metastore_id            = "<metastore-id>"
+managed_services_cmk_id = "<live/account output managed_services_cmk_id>"
+existing_workspace_id   = null # numeric ID of a console-created workspace to import, if any
+
+admin_group_name    = "<idp-group-dev-admins>"
+user_group_name     = "<idp-group-engineers>"
+uc_admin_group_name = "<idp-group-uc-admins>"
+human_catalog_privileges = {
+  "<idp-group-engineers>" = ["USE_CATALOG", "USE_SCHEMA", "CREATE_SCHEMA", "CREATE_TABLE", "SELECT", "MODIFY", "READ_VOLUME", "WRITE_VOLUME"]
+}
+allowed_ip_cidrs = ["<corporate-egress-cidr>", "<ci-runner-egress-ip>/32"]
+lockdown         = false
+
+# Rollout: DRY_RUN + endpoint disabled -> rule ESTABLISHED -> endpoint enabled -> ENFORCED.
+egress_enforcement_mode     = "DRY_RUN"
+s3_private_endpoint_enabled = false
+
+kms_admin_arns                = ["arn:aws:iam::111122223333:role/terraform-deployer", "arn:aws:iam::111122223333:role/kms-admin"]
+bucket_admin_principal_arns   = ["arn:aws:iam::111122223333:role/terraform-deployer", "arn:aws:iam::111122223333:role/break-glass"]
+landing_writer_principal_arns = []
+object_lock_retention_days    = 30
+cloudtrail_s3_bucket_name     = "<cloudtrail-log-bucket>"
+
+alert_emails     = ["<security-alerts-distribution-list>"]
+manage_metastore = true # exactly one workspace per metastore
+
+tags = { "platform:env" = "dev" }
+
+# Classic compute plane
+vpc_cidr                     = "10.20.0.0/16" # must not overlap networks it may be peered with
+flow_logs_s3_bucket_arn      = "arn:aws:s3:::<vpc-flow-logs-bucket>"
+enhanced_security_monitoring = true
+compliance_standards         = []

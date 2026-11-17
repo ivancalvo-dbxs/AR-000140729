@@ -83,7 +83,7 @@ resource "databricks_catalog" "signal" {
   provider = databricks.workspace
   for_each = databricks_external_location.signal
 
-  name           = local.catalogs[each.key]
+  name           = module.names.catalogs[each.key]
   storage_root   = "s3://${aws_s3_bucket.signal[each.key].bucket}/managed"
   isolation_mode = "ISOLATED"
   comment        = "${title(each.key)} signals (${var.environment}), managed by Terraform"

@@ -6,7 +6,7 @@
 resource "databricks_mws_network_connectivity_config" "this" {
   provider = databricks.account
 
-  name   = local.ncc_name
+  name   = module.names.ncc_name
   region = var.aws_region
 }
 
@@ -23,14 +23,14 @@ resource "databricks_mws_ncc_binding" "this" {
   provider = databricks.account
 
   network_connectivity_config_id = databricks_mws_network_connectivity_config.this.network_connectivity_config_id
-  workspace_id                   = databricks_mws_workspaces.this.workspace_id
+  workspace_id                   = var.workspace_id
 }
 
 resource "databricks_account_network_policy" "this" {
   provider = databricks.account
 
   account_id        = var.databricks_account_id
-  network_policy_id = local.network_policy_id
+  network_policy_id = module.names.network_policy_id
 
   egress = {
     network_access = {
@@ -50,6 +50,6 @@ resource "databricks_account_network_policy" "this" {
 resource "databricks_workspace_network_option" "this" {
   provider = databricks.account
 
-  workspace_id      = databricks_mws_workspaces.this.workspace_id
+  workspace_id      = var.workspace_id
   network_policy_id = databricks_account_network_policy.this.network_policy_id
 }
