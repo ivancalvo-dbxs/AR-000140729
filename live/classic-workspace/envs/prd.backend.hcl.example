@@ -1,5 +1,5 @@
 bucket       = "<terraform-state-bucket>"
-key          = "databricks/dev.tfstate"
+key          = "databricks/classic-prd.tfstate"
 region       = "us-west-2"
 use_lockfile = true
 encrypt      = true

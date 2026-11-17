@@ -1,10 +1,15 @@
-# Hardened serverless Databricks workspaces on AWS
+# Hardened Databricks workspaces on AWS: serverless and customer-managed VPC
 
-Terraform for a security data platform on Databricks: hardened **serverless** workspaces, one per environment, under one Databricks account and control plane.
+Terraform for a security data platform on Databricks: hardened workspaces, one per environment, under one Databricks account and control plane.
+Two workspace types are supported, as two separate modules that share the same security baseline:
+
+- **Serverless** (`modules/serverless-workspace`): no customer VPC, serverless compute only.
+- **Classic, customer-managed VPC** (`modules/classic-workspace`): classic clusters in an isolated customer VPC with back-end PrivateLink and no internet path, plus serverless compute.
+
 Dev has every service on for engineers.
 Prod runs only an ingestion job (Jobs Serverless, Auto Loader) inside a compensating boundary: no human data access, no SQL for humans, no downloads, deny-all egress.
 
-The code follows the patterns of the Databricks [AI Platform Kit](https://github.com/databricks-solutions/ai-platform-kit) skills (platform provisioning, private networking, Unity Catalog setup, identity governance, workspace config) and the serverless modules of the [Security Reference Architecture](https://github.com/databricks/terraform-databricks-sra).
+The code follows the patterns of the Databricks [AI Platform Kit](https://github.com/databricks-solutions/ai-platform-kit) skills (platform provisioning, private networking, Unity Catalog setup, identity governance, workspace config) and the [Security Reference Architecture](https://github.com/databricks/terraform-databricks-sra).
 
 > **Status: not yet applied to a real environment.**
 > The code passes `terraform validate` and offline tests with mocked providers, but nothing here has been planned or applied against AWS or Databricks.
@@ -12,6 +17,7 @@ The code follows the patterns of the Databricks [AI Platform Kit](https://github
 
 ## Contents
 
+- [Choosing a workspace type](#choosing-a-workspace-type)
 - [Architecture](#architecture)
 - [Repository layout](#repository-layout)
 - [Naming convention](#naming-convention)
@@ -23,7 +29,24 @@ The code follows the patterns of the Databricks [AI Platform Kit](https://github
 - [Assumptions to confirm on first apply](#assumptions-to-confirm-on-first-apply)
 - [Tests](#tests)
 
+## Choosing a workspace type
+
+| | Serverless | Classic (customer-managed VPC) |
+|---|---|---|
+| Module / root | `modules/serverless-workspace` / `live/serverless-workspace` | `modules/classic-workspace` / `live/classic-workspace` |
+| Compute | Serverless only (jobs, SQL, notebooks) | Classic clusters in the customer VPC, plus serverless |
+| Customer network | None | Isolated VPC: no internet gateway, no NAT, back-end PrivateLink |
+| Root storage | Databricks default storage (managed-services CMK) | Customer root bucket (workspace-storage CMK) |
+| Customer-managed keys | Managed services | Managed services + workspace storage (root bucket and EBS) |
+| Enhanced security monitoring / compliance profile | Not confirmed for serverless | Supported: ESM on by default, compliance profile optional |
+| When to pick | Lowest operational surface; ingestion and SQL on serverless | Workloads that need classic clusters, custom networking, or the compliance security profile |
+
+Both modules apply the identical baseline from `modules/workspace-core`: Unity Catalog storage, identity, front door, serverless egress controls, prod lockdown and monitoring.
+You can run both types in the same Databricks account; give them different `function` values (for example `ingest` and `eng`) or separate environments so their names do not collide.
+
 ## Architecture
+
+Serverless workspace:
 
 ```
                          Databricks account (one control plane)
@@ -47,18 +70,42 @@ The code follows the patterns of the Databricks [AI Platform Kit](https://github
                   └────────────────────────────────────────────────────────────┘
 ```
 
+Classic workspace (adds the customer compute plane; the baseline above still applies):
+
+```
+ Customer AWS account
+ ┌─────────────────────────── compute VPC (no IGW, no NAT) ───────────────────────────┐
+ │  compute subnets x2 (no public IPs)          PrivateLink subnets x2                 │
+ │  ┌───────────────────────┐   443/2443/6666/  ┌────────────────────────────────────┐ │
+ │  │ classic clusters      │──8443-8451──────►│ Databricks REST + relay endpoints  │─┼──► control plane
+ │  │ (workspace SG)        │                   │ STS, Kinesis endpoints (policies)  │ │     (PrivateLink)
+ │  └──────────┬────────────┘                   └────────────────────────────────────┘ │
+ │             │ S3 gateway endpoint (only own-account buckets + Databricks artifacts)  │
+ │  flow logs ─┴──► S3          default SG: no rules                                    │
+ └─────────────┬───────────────────────────────────────────────────────────────────────┘
+               ▼
+   root bucket (workspace-storage CMK) · signal buckets · cross-account role (this VPC/SG only)
+```
+
 ## Repository layout
 
 ```
-modules/serverless-workspace/   Reusable module: one serverless workspace and everything around it
-  tests/                        terraform test with mocked providers
-  files/security_alerts.py      Script run by the security alert job
-live/account/                   Account-wide controls, applied once per Databricks account
-live/workspace/                 Root used for every workspace; one state and one tfvars file per workspace
-  envs/                         dev and prd examples (tfvars and backend config)
+modules/
+  serverless-workspace/         Public module: serverless workspace + baseline
+  classic-workspace/            Public module: customer-managed VPC + classic workspace + baseline
+  workspace-core/               Internal: security baseline shared by both (UC, identity, egress, lockdown, monitoring)
+    files/security_alerts.py    Script run by the security alert job
+  naming/                       Internal: the naming convention, as a pure function
+  */tests/                      terraform test with mocked providers
+live/
+  account/                      Account-wide controls, applied once per Databricks account
+  serverless-workspace/         Root for serverless workspaces; one state and one tfvars file per workspace
+  classic-workspace/            Root for classic workspaces; same layout
+    envs/                       dev and prd examples (tfvars and backend config)
 ```
 
-The module is called once per workspace, each call in its own Terraform state.
+Use the public modules only; `workspace-core` and `naming` are internal building blocks and carry no input validation of their own.
+Each public module is called once per workspace, each call in its own Terraform state.
 Dev and prod differ only in their tfvars file, so the two cannot drift in code.
 
 ## Naming convention
@@ -85,6 +132,9 @@ Callers cannot set names directly, so every environment follows the same convent
 | Service principal | `<prefix>-sp-<zone>-<function>-<region>-<env>` | `acme-sp-shared-ingest-usw2-prd` |
 | UC IAM role and storage credential | `<prefix>-uc-<zone>-<function>-<region>-<env>` | `acme-uc-shared-ingest-usw2-prd` |
 | Data KMS alias (regional, no region token) | `alias/<prefix>-<zone>-<function>-<env>` | `alias/acme-shared-ingest-prd` |
+| Classic only: VPC, subnets, security groups, endpoints | `<workspace>-vpc`, `<workspace>-compute-<az>`, `<workspace>-workspace`, `<workspace>-sts` ... | `acme-shared-eng-usw2-prd-vpc` |
+| Classic only: root bucket | `<workspace>-root-<rand6>` | `acme-shared-eng-usw2-prd-root-x1y2z3` |
+| Classic only: cross-account role, storage key alias | `<workspace>-cross-account`, `<data KMS alias>-workspace-storage` | `acme-shared-eng-usw2-prd-cross-account` |
 
 Hyphens are used for AWS objects and workspaces, underscores for Unity Catalog objects.
 
@@ -100,14 +150,14 @@ Hyphens are used for AWS objects and workspaces, underscores for Unity Catalog o
 | Hardened key policy | Key admins can manage but not use the key; Databricks gets only `kms:Encrypt` and `kms:Decrypt`, scoped by `aws:PrincipalTag/DatabricksAccountId`; automatic rotation on |
 | Key events monitored | EventBridge rule on `DisableKey`, `ScheduleKeyDeletion`, `PutKeyPolicy`, grant and alias changes, sent to an SNS topic |
 
-### Per workspace (`modules/serverless-workspace`)
+### Shared baseline, both workspace types (`modules/workspace-core`)
 
 | Control | Implementation |
 |---|---|
-| Serverless workspace with CMK | `databricks_mws_workspaces` with `compute_mode = "SERVERLESS"`, Enterprise tier, managed-services CMK |
+| Serverless workspace with CMK (serverless module) | `databricks_mws_workspaces` with `compute_mode = "SERVERLESS"`, Enterprise tier, managed-services CMK |
 | Egress: only this workspace's buckets | Own network policy with the workspace buckets as the only storage destinations; `egress_enforcement_mode` for dry run, then enforced |
 | Private connectivity to S3 | NCC with an S3 private endpoint rule for the workspace buckets |
-| Bucket policy pinned to the private endpoint, not IP ranges | `DenyOutsidePrivateEndpoint`: only the NCC VPC endpoint or the Databricks control-plane VPCs, once `s3_private_endpoint_enabled = true` |
+| Bucket policy pinned to the private endpoint, not IP ranges | `DenyOutsidePrivateEndpoint`: only the NCC VPC endpoint, the classic VPC's S3 gateway endpoint (classic only) or the Databricks control-plane VPCs, once `s3_private_endpoint_enabled = true` |
 | Block governance bypass | `DenyDataAccessOutsideUnityCatalog`: object reads and writes denied to every principal except the UC role and the listed producers, admins included |
 | Producers write only to `landing/` | `DenyProducersOutsideLanding` for `landing_writer_principal_arns` |
 | Encryption in transit | `DenyInsecureTransport` |
@@ -124,6 +174,24 @@ Hyphens are used for AWS objects and workspaces, underscores for Unity Catalog o
 | CloudTrail correlation | A trail recording S3 data events on the workspace buckets, to join with UC credential vending in `system.access.audit` |
 | Pinned serverless environment | `serverless_environment_version` on the jobs this module creates |
 | Identity | Account groups (synced from the IdP) assigned as workspace ADMIN and USER; one workload service principal per workspace |
+
+### Classic workspace only (`modules/classic-workspace`)
+
+| Control | Implementation |
+|---|---|
+| Customer-managed VPC, no internet path | VPC with two compute and two PrivateLink subnets across two AZs; no internet gateway, no NAT gateway, local routes only |
+| No public IPs (secure cluster connectivity) | `map_public_ip_on_launch = false` on compute subnets; clusters reach the control plane through the relay endpoint |
+| Back-end PrivateLink | Databricks REST API and secure cluster connectivity relay interface endpoints with private DNS, registered as `databricks_mws_vpc_endpoint` and attached to the network configuration |
+| Private access settings | Public front end kept for SSO and the IP allow list; private access limited to this workspace's REST endpoint (`ENDPOINT` level) |
+| Restrictive AWS service endpoints | S3 gateway endpoint allows only buckets in this AWS account plus the Databricks artifact, system-table and log buckets; STS and Kinesis endpoint policies limited to this account and Databricks |
+| Security groups | Workspace SG: internode traffic plus the Databricks control-plane ports to the VPC and S3 only. PrivateLink SG: ingress from the workspace SG only. The VPC default SG has no rules |
+| Network audit | VPC flow logs (all traffic) to an existing S3 bucket |
+| Least-privilege cross-account role | Provider-generated `restricted` policy: only this VPC, security group and region, Databricks AMIs only |
+| Workspace-storage CMK | Per-workspace KMS key for the root bucket and cluster EBS volumes; Databricks scoped by account tag; EBS use only through EC2 |
+| Root bucket | SSE-KMS with the storage key, ACLs disabled, public access blocked; after creation the policy narrows Databricks writes to this workspace's paths and denies non-TLS |
+| Compute hardening | Enhanced security monitoring on by default; compliance security profile with `compliance_standards` (plus required automatic cluster updates) |
+| Cluster policy | Unity Catalog access modes only, no instance profiles, no custom images, no init scripts, local disk encryption, auto-termination 10-120 min |
+| Who can create classic clusters | Nobody has unrestricted cluster creation. Dev: engineers and the workload SP can use the hardened policy. Prod (`lockdown`): the workload SP only |
 
 ### Prod compensating boundary (`lockdown = true`)
 
@@ -148,6 +216,13 @@ Databricks:
 - An account-admin service principal with an OAuth secret (`client_id` and `client_secret`), used by Terraform.
 - A Unity Catalog metastore in the region (its ID is an input).
 - The Terraform service principal must be a metastore admin, or a member of `uc_admin_group_name`.
+
+Classic workspaces also need:
+
+- AWS rights to manage VPCs, subnets, route tables, security groups, VPC endpoints and flow logs.
+- A free VPC CIDR between `/16` and `/22` per workspace. A `/16` gives two `/18` cluster subnets (about 16,000 IPs each); a `/22` gives two `/24` (about 250 each).
+- VPC endpoint quota for 4 interface endpoints and 1 gateway endpoint per workspace.
+- An S3 bucket for VPC flow logs, whose policy allows `delivery.logs.amazonaws.com`.
 
 Existing resources this code expects (not created here):
 
@@ -185,8 +260,10 @@ terraform output managed_services_cmk_id            # input for every workspace
 
 ### 3. Each workspace (own state per workspace)
 
+Use `live/serverless-workspace` or `live/classic-workspace`; both work the same way.
+
 ```bash
-cd live/workspace
+cd live/serverless-workspace                        # or live/classic-workspace
 cp envs/dev.tfvars.example envs/dev.tfvars          # fill in
 cp envs/dev.backend.hcl.example envs/dev.backend.hcl
 terraform init -reconfigure -backend-config=envs/dev.backend.hcl
@@ -207,7 +284,7 @@ The S3 private endpoint cannot be enabled when it is created, so roll out in two
 1. First apply with `s3_private_endpoint_enabled = false`, and `egress_enforcement_mode = "DRY_RUN"` in dev.
 2. Wait until `terraform output workspace` shows `s3_private_endpoint.connection_state = "ESTABLISHED"`.
 3. Apply again with `s3_private_endpoint_enabled = true`. This enables the endpoint and pins the bucket policies to it.
-4. Test the allowed path (read the bucket from a serverless job) and the denied path (an internet call is dropped and appears in `system.access.outbound_network`).
+4. Test the allowed path (read the bucket from a serverless job, and from a classic cluster on classic workspaces) and the denied path (an internet call is dropped and appears in `system.access.outbound_network`).
 5. Set `egress_enforcement_mode = "ENFORCED"` and apply.
 
 ### 5. Adopt a workspace created outside Terraform
@@ -245,6 +322,13 @@ The checks are:
 
 To run it on demand: open the job in the workspace and click **Run now**, or run `databricks jobs run-now <job-id>` as an admin.
 
+### Classic clusters
+
+On classic workspaces, clusters are created from the hardened policy (`cluster_policy_id` output).
+Jobs that run on classic compute should use a job cluster with that policy and run as the workload service principal.
+Classic clusters have no internet access: install libraries only from the `ops.libraries` volume.
+Expect the first cluster on a new workspace to take 10-15 minutes to start.
+
 ### Common changes
 
 | Change | How |
@@ -252,6 +336,7 @@ To run it on demand: open the job in the workspace and click **Run now**, or run
 | Add a signal type to a workspace | Append it to `signals` (for example `["raw", "enriched"]`); keep the first entry unchanged, since it holds the default catalog and the `ops` volumes |
 | Give engineers data access in dev | `human_catalog_privileges = { "<group>" = ["USE_CATALOG", "SELECT", ...] }` |
 | Add an environment (`qal`, `e2e`) | Copy a tfvars and backend example, change `environment`, keep `manage_metastore = false` |
+| Widen the cluster policy | Edit `databricks_cluster_policy.hardened` in `modules/classic-workspace/compute.tf`; keep the Unity Catalog access modes and the instance-profile, image and init-script bans |
 | Add a producer that writes to `landing/` | Add its role ARN to `landing_writer_principal_arns`; its own IAM policy must also allow `s3:PutObject` and the data key |
 
 ### Destroying
@@ -260,6 +345,7 @@ To run it on demand: open the job in the workspace and click **Run now**, or run
 - A destroyed workspace's name cannot be reused for about an hour.
 - Deleting `databricks_workspace_conf` can fail for some keys; the provider prints a warning and the setting stays.
 - The reserved `default-policy` cannot be deleted; remove it from state instead (`terraform state rm`).
+- Classic: the compliance security profile cannot be turned off once enabled; private access settings are immutable, so changing them creates a new object and briefly re-provisions the workspace.
 
 ## Gaps: not covered by this code
 
@@ -268,16 +354,21 @@ These requirements need configuration or process outside this repository:
 1. **Account console sign-in.** SSO with the corporate identity provider and MFA, and the account admin list, are set in the account console.
 2. **Product toggles in prod.** Databricks Apps, Lakeflow, interactive notebooks and Delta Sharing have no stable Terraform setting today. Terraform removes their data paths (no data grants, no SQL entitlement, deny-all egress, no downloads), but the toggles must be turned off in the workspace admin settings, and the Delta Sharing scope at the metastore level.
 3. **Front-end PrivateLink.** Not confirmed for serverless workspaces; the IP allow list, SSO with MFA and disabled tokens are the compensating controls.
-4. **Compliance security profile and enhanced security monitoring.** Not confirmed for serverless workspaces, so they are not enabled. The customer-managed key, deny-all egress and no human data grants compensate.
+4. **Compliance security profile and enhanced security monitoring on serverless.** Not confirmed for serverless workspaces, so the serverless module does not enable them; the customer-managed key, deny-all egress and no human data grants compensate. The classic module enables enhanced security monitoring and supports the compliance profile.
 5. **Security Analysis Tool.** Not deployed; run it quarterly as a posture check (it needs its own egress allowances).
 6. **Process controls.** Reviewing dry-run results, verifying the AWS storage boundary quarterly, testing KMS rotation, peer-reviewing code and deploys, and checking job outputs for secrets are human processes.
 7. **Workloads.** The ingestion job is not part of this code (see [Deploy the ingestion job](#deploy-the-ingestion-job)).
 8. **Metastore, groups and shared AWS resources.** The metastore, IdP groups, state bucket, CloudTrail log bucket and SNS topic must already exist.
 9. **Alert delivery.** Alerts are job-failure emails; integrating with a SIEM or paging tool is not included.
 10. **Shared NCC.** The naming convention gives one NCC per zone, region and environment, but the module creates one per workspace. When a second workspace joins the same zone and environment, move the NCC to a shared layer so one S3 rule lists every bucket.
-11. **Second region.** `us-east-2` is accepted by the naming, but its Databricks control-plane VPC IDs are not filled in (`modules/serverless-workspace/storage.tf`). Without them, control-plane access to the buckets is denied once the private endpoint is enabled.
+11. **Second region.** `us-east-2` is accepted by the naming, but its Databricks control-plane VPC IDs are not filled in (`modules/workspace-core/storage.tf`). Without them, control-plane access to the buckets is denied once the private endpoint is enabled.
 12. **Ingress network policy.** The newer IP-based ingress rules of account network policies are not used; the workspace IP allow list is the ingress control.
-13. **Real-environment testing.** Nothing has been applied yet; see the next section.
+13. **Classic front-end PrivateLink.** The classic module keeps the front end public (SSO, IP allow list, no tokens). Fully private access (a transit VPC with a front-end endpoint, Route 53 private zone and private access settings with public access off) is not implemented.
+14. **Classic internet egress.** The classic VPC has no internet path at all. Workloads that need internet (for example PyPI or external APIs) need an egress firewall or proxy, which is not included.
+15. **Hub-and-spoke and peering.** Each classic workspace gets its own VPC and endpoints; sharing endpoints through a hub VPC, Transit Gateway or Direct Connect to on-premises networks is not included.
+16. **Classic instance and cost controls.** The cluster policy does not restrict instance types, worker counts or spot usage; add those to fit budgets. No budget policies are set.
+17. **Sample datasets.** The S3 endpoint policy does not allow the Databricks sample datasets bucket, so `/databricks-datasets` does not work on classic clusters.
+18. **Real-environment testing.** Nothing has been applied yet; see the next section.
 
 ## Assumptions to confirm on first apply
 
@@ -292,14 +383,19 @@ These requirements need configuration or process outside this repository:
 9. **Producers.** Upstream producers write to `landing/` from their own network, with their own IAM permissions on the bucket and the data key.
 10. **Control-plane VPC IDs.** The `us-west-2` Databricks control-plane VPC IDs come from the public Databricks documentation and can change; re-check them before enabling the private endpoint.
 11. **Provider versions.** Databricks provider `~> 1.143` and AWS provider `6.x`, which are the versions this code was validated with.
+12. **Classic region data.** PrivateLink endpoint service names, Databricks artifact, system-table and log bucket names, and the region names used in root bucket paths (`oregon`, `ohio`) come from the Security Reference Architecture and the Databricks docs (`modules/classic-workspace/main.tf`). Re-check them for your region before the first apply.
+13. **Classic workspace catalog.** In prod, the lockdown revokes the workspace catalog by name. Classic workspaces are expected to get one too; if none exists, remove `databricks_grants.workspace_catalog` from the plan for that workspace.
+14. **Cluster policy keys.** The init-script bans use the `init_scripts.*.<type>.destination` policy paths with `forbidden`. Confirm the workspace accepts them; if not, use a `fixed` empty value instead.
+15. **Root bucket policy swap.** The root bucket starts with the provider-generated bootstrap policy, then is replaced by the narrower policy once the workspace ID exists (SRA pattern). Both are managed by Terraform; the bootstrap resource ignores later changes.
+16. **Availability zones.** The classic module uses the first two available AZs in the region. Some instance types or the PrivateLink services may not be in every AZ.
 
 ## Tests
 
 ```bash
-cd modules/serverless-workspace
-terraform init -backend=false
-terraform test
+for m in workspace-core serverless-workspace classic-workspace; do
+  (cd modules/$m && terraform init -backend=false && terraform test)
+done
 ```
 
 The tests run offline with mocked providers and need no credentials.
-They check the naming convention, the dev and prod lockdown differences, that prod rejects human data grants, and input validation.
+They check the naming convention, the dev and prod lockdown differences, that prod rejects human data grants, input validation, and for classic workspaces the subnet layout, no public IPs, private DNS on endpoints, private access level, cluster policy permissions and the compliance profile switch.

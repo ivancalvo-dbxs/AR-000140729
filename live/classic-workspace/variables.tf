@@ -1,4 +1,4 @@
-# Mirrors modules/serverless-workspace/variables.tf (except serverless_environment_version, kept at the module default).
+# Mirrors modules/classic-workspace/variables.tf (except serverless_environment_version, kept at the module default).
 
 # ---------------------------------------------------------------------------
 # Identity of the workspace. Every name is derived from these.
@@ -10,6 +10,11 @@ variable "prefix" {
   validation {
     condition     = can(regex("^[a-z][a-z0-9]{1,9}$", var.prefix))
     error_message = "prefix must be 2-10 lowercase letters or digits, starting with a letter."
+  }
+  validation {
+    # Network policy IDs are limited to 32 characters by the API.
+    condition     = length("np-${var.prefix}-${var.zone}-${var.function}-usw2-${var.environment}") <= 32
+    error_message = "prefix is too long: the network policy ID np-<prefix>-<zone>-<function>-<region>-<env> must be at most 32 characters."
   }
 }
 
@@ -79,7 +84,7 @@ variable "metastore_id" {
 }
 
 variable "managed_services_cmk_id" {
-  description = "Databricks customer-managed key configuration ID (use case MANAGED_SERVICES). Encrypts control-plane data and default storage."
+  description = "Databricks customer-managed key configuration ID (use case MANAGED_SERVICES), from live/account. Encrypts control-plane data (notebooks, secrets, queries)."
   type        = string
 }
 
@@ -106,6 +111,10 @@ variable "human_catalog_privileges" {
   description = "UC privileges granted to human groups on every catalog of this workspace, keyed by group name. Must be empty when lockdown = true."
   type        = map(list(string))
   default     = {}
+  validation {
+    condition     = !var.lockdown || length(var.human_catalog_privileges) == 0
+    error_message = "lockdown = true forbids human data grants (human_catalog_privileges must be empty)."
+  }
 }
 
 variable "allowed_ip_cidrs" {
@@ -203,6 +212,36 @@ variable "manage_metastore" {
   description = "Manage metastore-wide objects from this workspace: enable system.access and restrict credential/location creation to uc_admin_group_name. Set true in exactly one workspace per metastore."
   type        = bool
   default     = false
+}
+
+# ---------------------------------------------------------------------------
+# Classic compute plane (customer-managed VPC).
+# ---------------------------------------------------------------------------
+
+variable "vpc_cidr" {
+  description = "CIDR of the compute VPC. Half goes to two cluster subnets, a small slice to two PrivateLink subnets. Must not overlap networks it may later be peered with."
+  type        = string
+  validation {
+    condition     = can(cidrhost(var.vpc_cidr, 0)) && tonumber(split("/", var.vpc_cidr)[1]) >= 16 && tonumber(split("/", var.vpc_cidr)[1]) <= 22
+    error_message = "vpc_cidr must be a valid CIDR between /16 and /22."
+  }
+}
+
+variable "flow_logs_s3_bucket_arn" {
+  description = "Existing S3 bucket ARN receiving VPC flow logs. Its policy must allow delivery.logs.amazonaws.com."
+  type        = string
+}
+
+variable "enhanced_security_monitoring" {
+  description = "Enable enhanced security monitoring (hardened image, antivirus and file integrity monitoring agents) on classic compute."
+  type        = bool
+  default     = true
+}
+
+variable "compliance_standards" {
+  description = "Compliance security profile standards, for example [\"HIPAA\"] or [\"PCI_DSS\"]. [\"NONE\"] turns the profile on without a standard. Empty keeps it off. The profile cannot be turned off once on."
+  type        = list(string)
+  default     = []
 }
 
 variable "existing_workspace_id" {

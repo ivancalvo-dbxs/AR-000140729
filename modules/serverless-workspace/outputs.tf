@@ -12,43 +12,37 @@ output "workspace_url" {
 }
 
 output "service_principal_application_id" {
-  description = "Run jobs and deployments as this SP."
-  value       = databricks_service_principal.workload.application_id
+  value = module.core.service_principal_application_id
 }
 
 output "catalogs" {
-  value = { for k, c in databricks_catalog.signal : k => c.name }
+  value = module.core.catalogs
 }
 
 output "buckets" {
-  value = { for k, b in aws_s3_bucket.signal : k => b.bucket }
+  value = module.core.buckets
 }
 
 output "uc_role_arn" {
-  value = aws_iam_role.uc.arn
+  value = module.core.uc_role_arn
 }
 
 output "ncc_id" {
-  value = databricks_mws_network_connectivity_config.this.network_connectivity_config_id
+  value = module.core.ncc_id
 }
 
 output "s3_private_endpoint" {
-  description = "Check connection_state is ESTABLISHED before setting s3_private_endpoint_enabled = true."
-  value = {
-    vpc_endpoint_id  = databricks_mws_ncc_private_endpoint_rule.s3.vpc_endpoint_id
-    connection_state = databricks_mws_ncc_private_endpoint_rule.s3.connection_state
-    enabled          = databricks_mws_ncc_private_endpoint_rule.s3.enabled
-  }
+  value = module.core.s3_private_endpoint
 }
 
 output "network_policy_id" {
-  value = databricks_account_network_policy.this.network_policy_id
+  value = module.core.network_policy_id
 }
 
 output "checkpoints_volume_path" {
-  value = databricks_volume.ops["checkpoints"].volume_path
+  value = module.core.checkpoints_volume_path
 }
 
 output "libraries_volume_path" {
-  value = databricks_volume.ops["libraries"].volume_path
+  value = module.core.libraries_volume_path
 }

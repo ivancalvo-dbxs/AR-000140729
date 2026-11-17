@@ -7,7 +7,7 @@ locals {
     "us-east-2" = [] # look up before using us-east-2; an empty list denies control-plane access
   }[var.aws_region]
 
-  uc_role_name = "${var.prefix}-uc-${local.base}"
+  uc_role_name = module.names.uc_role
   uc_role_arn  = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.uc_role_name}"
 
   # Principals that may touch object data at all: the UC role (vended credentials) and producers.
@@ -58,7 +58,7 @@ resource "aws_kms_key" "data" {
 }
 
 resource "aws_kms_alias" "data" {
-  name          = "alias/${var.prefix}-${var.zone}-${var.function}-${var.environment}"
+  name          = module.names.data_kms_alias
   target_key_id = aws_kms_key.data.key_id
 }
 
@@ -69,7 +69,7 @@ resource "aws_kms_alias" "data" {
 resource "aws_s3_bucket" "signal" {
   for_each = toset(var.signals)
 
-  bucket              = "${var.prefix}-${var.zone}-${each.key}-${local.region_code}-${var.environment}-${random_string.bucket_suffix.result}"
+  bucket              = "${module.names.signal_bucket_prefixes[each.key]}-${random_string.bucket_suffix.result}"
   object_lock_enabled = true
 }
 
@@ -219,7 +219,7 @@ data "aws_iam_policy_document" "bucket" {
     }
   }
 
-  # Pinned to the NCC private endpoint instead of IP ranges (compensating control for stable egress IPs).
+  # Pinned to the NCC private endpoint (plus classic compute VPC endpoints) instead of IP ranges (compensating control for stable egress IPs).
   dynamic "statement" {
     for_each = var.s3_private_endpoint_enabled ? [1] : []
     content {
@@ -234,7 +234,7 @@ data "aws_iam_policy_document" "bucket" {
       condition {
         test     = "StringNotEqualsIfExists"
         variable = "aws:SourceVpce"
-        values   = [databricks_mws_ncc_private_endpoint_rule.s3.vpc_endpoint_id]
+        values   = concat([databricks_mws_ncc_private_endpoint_rule.s3.vpc_endpoint_id], var.additional_s3_vpce_ids)
       }
       condition {
         test     = "StringNotEqualsIfExists"

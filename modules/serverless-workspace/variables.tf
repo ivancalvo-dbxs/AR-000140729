@@ -9,6 +9,11 @@ variable "prefix" {
     condition     = can(regex("^[a-z][a-z0-9]{1,9}$", var.prefix))
     error_message = "prefix must be 2-10 lowercase letters or digits, starting with a letter."
   }
+  validation {
+    # Network policy IDs are limited to 32 characters by the API.
+    condition     = length("np-${var.prefix}-${var.zone}-${var.function}-usw2-${var.environment}") <= 32
+    error_message = "prefix is too long: the network policy ID np-<prefix>-<zone>-<function>-<region>-<env> must be at most 32 characters."
+  }
 }
 
 variable "zone" {
@@ -104,6 +109,10 @@ variable "human_catalog_privileges" {
   description = "UC privileges granted to human groups on every catalog of this workspace, keyed by group name. Must be empty when lockdown = true."
   type        = map(list(string))
   default     = {}
+  validation {
+    condition     = !var.lockdown || length(var.human_catalog_privileges) == 0
+    error_message = "lockdown = true forbids human data grants (human_catalog_privileges must be empty)."
+  }
 }
 
 variable "allowed_ip_cidrs" {

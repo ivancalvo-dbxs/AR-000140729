@@ -1,45 +1,23 @@
-locals {
-  region_code = { "us-west-2" = "usw2", "us-east-2" = "use2" }[var.aws_region]
+module "names" {
+  source = "../naming"
 
-  # Naming convention. Hyphens for AWS and workspaces, underscores for UC.
-  base              = "${var.zone}-${var.function}-${local.region_code}-${var.environment}"
-  workspace_name    = "${var.prefix}-${local.base}"
-  network_policy_id = "np-${var.prefix}-${local.base}"
-  ncc_name          = "ncc-${var.prefix}-${var.zone}-${local.region_code}-${var.environment}"
-  sp_name           = "${var.prefix}-sp-${local.base}"
-  catalogs          = { for s in var.signals : s => "${var.prefix}_${var.zone}_${s}_${var.environment}" }
-  default_catalog   = local.catalogs[var.signals[0]]
-
-  # Serverless workspaces get a workspace catalog on default storage, named after the workspace.
-  workspace_catalog = replace(local.workspace_name, "-", "_")
+  prefix      = var.prefix
+  zone        = var.zone
+  function    = var.function
+  environment = var.environment
+  aws_region  = var.aws_region
+  signals     = var.signals
 }
 
-resource "databricks_mws_workspaces" "this" {
-  provider = databricks.account
-
-  account_id                               = var.databricks_account_id
-  workspace_name                           = local.workspace_name
-  aws_region                               = var.aws_region
-  compute_mode                             = "SERVERLESS"
-  pricing_tier                             = "ENTERPRISE"
-  managed_services_customer_managed_key_id = var.managed_services_cmk_id
-
-  lifecycle {
-    precondition {
-      condition     = length(local.network_policy_id) <= 32
-      error_message = "Network policy ID ${local.network_policy_id} exceeds the 32 character API limit."
-    }
-    precondition {
-      condition     = !var.lockdown || length(var.human_catalog_privileges) == 0
-      error_message = "lockdown = true forbids human data grants (human_catalog_privileges must be empty)."
-    }
-  }
+locals {
+  workspace_name    = module.names.workspace_name
+  workspace_catalog = module.names.workspace_catalog
 }
 
 resource "databricks_metastore_assignment" "this" {
   provider = databricks.account
 
-  workspace_id = databricks_mws_workspaces.this.workspace_id
+  workspace_id = var.workspace_id
   metastore_id = var.metastore_id
 }
 
@@ -59,7 +37,7 @@ data "databricks_group" "users" {
 
 resource "databricks_service_principal" "workload" {
   provider     = databricks.account
-  display_name = local.sp_name
+  display_name = module.names.service_principal
 }
 
 # Permission assignment requires identity federation, which the metastore assignment turns on.
@@ -71,7 +49,7 @@ resource "databricks_mws_permission_assignment" "this" {
     workload = { id = databricks_service_principal.workload.id, permission = "USER" }
   }
 
-  workspace_id = databricks_mws_workspaces.this.workspace_id
+  workspace_id = var.workspace_id
   principal_id = each.value.id
   permissions  = [each.value.permission]
 
