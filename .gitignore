@@ -1,0 +1,10 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.backend.hcl
+backend.hcl
+.terraform.tfstate.lock.info
+modules/**/.terraform.lock.hcl
+__pycache__/
+.ruff_cache/

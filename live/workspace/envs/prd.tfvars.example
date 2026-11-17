@@ -1,0 +1,32 @@
+# Prod ingest workspace: only the ingestion job runs, inside the compensating boundary.
+prefix      = "acme"
+zone        = "shared"
+function    = "ingest"
+environment = "prd"
+aws_region  = "us-west-2"
+signals     = ["raw"]
+
+databricks_account_id   = "00000000-0000-0000-0000-000000000000"
+metastore_id            = "<metastore-id>"
+managed_services_cmk_id = "<live/account output managed_services_cmk_id>"
+
+admin_group_name         = "<idp-group-prd-break-glass>"
+user_group_name          = "<idp-group-engineers>"
+uc_admin_group_name      = "<idp-group-uc-admins>"
+human_catalog_privileges = {} # no human data grants; enforced by the module when lockdown = true
+allowed_ip_cidrs         = ["<corporate-egress-cidr>", "<ci-runner-egress-ip>/32"]
+lockdown                 = true
+
+egress_enforcement_mode     = "ENFORCED"
+s3_private_endpoint_enabled = false # flip to true on the second apply, once the rule is ESTABLISHED
+
+kms_admin_arns                = ["arn:aws:iam::111122223333:role/terraform-deployer", "arn:aws:iam::111122223333:role/kms-admin"]
+bucket_admin_principal_arns   = ["arn:aws:iam::111122223333:role/terraform-deployer", "arn:aws:iam::111122223333:role/break-glass"]
+landing_writer_principal_arns = ["<arn-of-signal-producer-role>"]
+object_lock_retention_days    = 365
+cloudtrail_s3_bucket_name     = "<cloudtrail-log-bucket>"
+
+alert_emails     = ["<security-alerts-distribution-list>"]
+manage_metastore = false
+
+tags = { "platform:env" = "prd" }

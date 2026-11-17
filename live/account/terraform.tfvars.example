@@ -1,0 +1,6 @@
+prefix                        = "acme"
+databricks_account_id         = "00000000-0000-0000-0000-000000000000"
+aws_region                    = "us-west-2"
+kms_admin_arns                = ["arn:aws:iam::111122223333:role/terraform-deployer", "arn:aws:iam::111122223333:role/kms-admin"]
+security_alerts_sns_topic_arn = "arn:aws:sns:us-west-2:111122223333:security-alerts"
+tags                          = { "platform:owner" = "<team>" }
